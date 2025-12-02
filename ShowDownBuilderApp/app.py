@@ -99,8 +99,7 @@ def get_build_rules(captain: str, build_type: str) -> Dict[str, List[str]]:
 
 def build_captain_plan(n: int, captain_config: Dict[str, Dict]) -> List[str]:
     weights = {k: v["exposure"] for k, v in captain_config.items()}
-    plan = [weighted_random_choice(weights) for _ in range(n)]
-    return plan
+    return [weighted_random_choice(weights) for _ in range(n)]
 
 
 # ================================================================
@@ -258,7 +257,7 @@ def run_app():
     st.write(f"CPT pool size: **{len(df_cpt)}**, FLEX pool size: **{len(df_flex)}**")
 
     captain_names = sorted(df_cpt["Name"].unique().tolist())
-    flex_names = sorted(df_flex["Name"].unique().tolist())
+    flex_names_all = sorted(df_flex["Name"].unique().tolist())
 
     st.subheader("Captain Configurations")
 
@@ -279,6 +278,9 @@ def run_app():
             )
             exposure_raw[cap] = exp_val
 
+            # FLEX players EXCLUDING this captain
+            available_flex = [p for p in flex_names_all if p != cap]
+
             tabs = st.tabs(list(BUILD_TYPE_COUNTS.keys()))
             build_weights = {}
             build_rules = {}
@@ -295,26 +297,23 @@ def run_app():
                     )
                     build_weights[build_type] = bw
 
-                    st.markdown("**Include Players:**")
                     include_sel = st.multiselect(
                         f"Include - {build_type}",
-                        options=flex_names,
+                        options=available_flex,
                         default=[],
                         key=f"inc_{cap}_{build_type}"
                     )
 
-                    st.markdown("**Exclude Players:**")
                     exclude_sel = st.multiselect(
                         f"Exclude - {build_type}",
-                        options=flex_names,
+                        options=available_flex,
                         default=[],
                         key=f"exc_{cap}_{build_type}"
                     )
 
-                    st.markdown("**Lock Players:**")
                     lock_sel = st.multiselect(
                         f"Locks - {build_type}",
-                        options=flex_names,
+                        options=available_flex,
                         default=[],
                         key=f"lock_{cap}_{build_type}"
                     )
