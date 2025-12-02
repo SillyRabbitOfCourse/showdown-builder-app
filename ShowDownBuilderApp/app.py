@@ -8,7 +8,7 @@ import streamlit as st
 # ================================================================
 
 DEFAULT_NUM_LINEUPS = 20
-DEFAULT_SALARY_CAP = 50000
+DEFAULT_SALARY_CAP = 50000      # DK showdown cap
 DEFAULT_MIN_SALARY = 48500
 DEFAULT_RANDOM_SEED = 42
 
@@ -20,19 +20,11 @@ BUILD_TYPE_COUNTS = {
     "1-5": (1, 5),
 }
 
-DEFAULT_BUILD_WEIGHTS = {
-    "4-2": 0.4,
-    "3-3": 0.4,
-    "5-1": 0.1,
-    "2-4": 0.05,
-    "1-5": 0.05,
-}
-
 # Will be built dynamically from UI
 CAPTAIN_CONFIG: Dict[str, Dict] = {}
 
-EXCLUDED_PLAYERS: List[str] = []  # Global player-level excludes (optional)
-EXCLUDED_TEAMS: List[str] = []    # You said no team-level exclusion in UI
+EXCLUDED_PLAYERS: List[str] = []  # global player-level exclusions (optional)
+EXCLUDED_TEAMS: List[str] = []    # you asked not to expose team-level in UI
 
 SLOT_ORDER = ["CPT", "FLEX1", "FLEX2", "FLEX3", "FLEX4", "FLEX5"]
 
@@ -43,8 +35,8 @@ SLOT_ORDER = ["CPT", "FLEX1", "FLEX2", "FLEX3", "FLEX4", "FLEX5"]
 
 def load_showdown_pool(source) -> pd.DataFrame:
     """
-    Load DK Showdown CSV. Assumes standard DKSalaries format.
-    Separate CPT and FLEX rows have their own salaries (as in DK).
+    Load DK Showdown CSV. Assumes standard DKSalaries format with
+    separate rows for CPT and FLEX (different salaries & IDs).
     """
     df = pd.read_csv(source)
 
@@ -67,8 +59,8 @@ def apply_exclusions(df: pd.DataFrame) -> pd.DataFrame:
 
 def split_cpt_flex(df: pd.DataFrame):
     """
-    Splits into CPT and FLEX pools based on 'Roster Position'.
-    NOTE: This preserves the separate CPT and FLEX salaries from the file.
+    Split into CPT and FLEX pools based on 'Roster Position'.
+    CPT rows use CPT salaries; FLEX rows use FLEX salaries.
     """
     cpt = df[df["Roster Position"] == "CPT"].reset_index(drop=True)
     flex = df[df["Roster Position"] == "FLEX"].reset_index(drop=True)
@@ -91,12 +83,13 @@ def weighted_random_choice(weights: Dict[str, float]) -> str:
     """
     Generic weighted random choice.
     weights: mapping from item -> weight (non-negative).
+    Uses raw values as weights (no normalization).
     """
     items = list(weights.items())
     total = sum(w for _, w in items if w > 0)
 
     if total == 0:
-        # All zero weights, pick uniformly
+        # If somehow everything is 0 here, just choose uniformly
         return random.choice([k for k, _ in items])
 
     r = random.random() * total
@@ -118,13 +111,10 @@ def determine_teams(df: pd.DataFrame) -> List[str]:
 
 def choose_build_type(captain: str) -> str:
     """
-    Uses per-captain build_weights from CAPTAIN_CONFIG.
-    Falls back to DEFAULT_BUILD_WEIGHTS if captain has no non-zero weights.
+    Uses per-captain build_weights from CAPTAIN_CONFIG with raw values.
+    If all weights are 0, that should have been caught earlier.
     """
-    bw = CAPTAIN_CONFIG[captain].get("build_weights", DEFAULT_BUILD_WEIGHTS)
-    bw = {k: v for k, v in bw.items() if v > 0}
-    if not bw:
-        bw = DEFAULT_BUILD_WEIGHTS
+    bw = CAPTAIN_CONFIG[captain]["build_weights"]
     return weighted_random_choice(bw)
 
 
@@ -139,29 +129,14 @@ def get_build_rules(captain: str, build_type: str) -> Dict[str, List[str]]:
 
 def build_captain_plan(n: int, captain_config: Dict[str, Dict]) -> List[str]:
     """
-    Build a list of length n of captain names based on exposure.
-    Exposures should already be normalized to sum to 1.0,
-    but we still handle rounding and leftover.
+    Build a list of length n of captain names based on raw exposure weights.
+    If all exposures are zero, this should have been caught earlier.
     """
-    cfg = {k: v for k, v in captain_config.items() if v["exposure"] > 0}
-    if not cfg:
-        # No exposures set -> equal shares among all captains in config
-        cfg = captain_config
-
+    weights = {k: v["exposure"] for k, v in captain_config.items()}
     plan: List[str] = []
-    # First allocate deterministic counts
-    for name, data in cfg.items():
-        cnt = int(data["exposure"] * n)
-        plan.extend([name] * cnt)
-
-    # Fill remaining slots stochastically according to exposure weights
-    leftover = n - len(plan)
-    weights = {k: v["exposure"] for k, v in cfg.items()}
-    for _ in range(leftover):
+    for _ in range(n):
         plan.append(weighted_random_choice(weights))
-
-    random.shuffle(plan)
-    return plan[:n]
+    return plan
 
 
 # ================================================================
@@ -178,8 +153,8 @@ def build_lineup_for_captain(
 ):
     """
     Builds a single lineup for a given captain name.
-    Uses CPT row for captain (with CPT salary) and FLEX rows (with FLEX salaries)
-    for the remaining 5 slots.
+    Uses CPT row for captain (CPT salary) and FLEX rows for remaining slots.
+    Ensures the captain's FLEX version does not appear as FLEX (by ID & Name).
     """
     cpt = df_cpt[df_cpt["Name"] == captain]
     if cpt.empty:
@@ -206,6 +181,7 @@ def build_lineup_for_captain(
 
     def pool(team: str) -> pd.DataFrame:
         p = df_flex[df_flex["TeamAbbrev"] == team]
+        # Prevent any duplicate IDs or names (so CPT can't appear at FLEX)
         p = p[~p["ID"].isin(used_ids)]
         p = p[~p["Name"].isin(used_names)]
         if include:
@@ -308,15 +284,6 @@ def parse_multiline_names(text: str) -> List[str]:
     return [line.strip() for line in text.splitlines() if line.strip()]
 
 
-def normalize_dict(d: Dict[str, float]) -> Dict[str, float]:
-    total = sum(v for v in d.values() if v > 0)
-    if total <= 0:
-        # If everything is zero, return equal weights
-        n = len(d) or 1
-        return {k: 1.0 / n for k in d.keys()}
-    return {k: (v / total if v > 0 else 0.0) for k, v in d.items()}
-
-
 # ================================================================
 #                         STREAMLIT APP
 # ================================================================
@@ -325,7 +292,7 @@ def run_app():
     global CAPTAIN_CONFIG
 
     st.title("🏈 DraftKings Showdown Lineup Builder")
-    st.write("Upload a DraftKings **DKSalaries.csv** file to generate lineups with full captain/build rules.")
+    st.write("Upload a DraftKings **DKSalaries.csv** file and configure captain exposures, build types, and rules.")
 
     uploaded = st.file_uploader("Upload DKSalaries.csv", type=["csv"])
 
@@ -333,7 +300,7 @@ def run_app():
         st.info("Please upload a `DKSalaries.csv` file to continue.")
         return
 
-    # Global settings in sidebar
+    # --------- SIDEBAR: GLOBAL SETTINGS ---------
     st.sidebar.header("Global Settings")
     num_lineups = st.sidebar.number_input(
         "Number of Lineups",
@@ -343,9 +310,10 @@ def run_app():
         step=1,
     )
 
+    # Salary cap: fixed range 0–50k, default 50k
     salary_cap = st.sidebar.number_input(
         "Salary Cap",
-        min_value=1000,
+        min_value=0,
         max_value=50000,
         value=DEFAULT_SALARY_CAP,
         step=500,
@@ -355,7 +323,7 @@ def run_app():
         "Minimum Total Salary",
         min_value=0,
         max_value=salary_cap,
-        value=DEFAULT_MIN_SALARY,
+        value=min(DEFAULT_MIN_SALARY, salary_cap),
         step=500,
     )
 
@@ -365,7 +333,7 @@ def run_app():
         step=1,
     )
 
-    # Load pool
+    # --------- LOAD POOL ---------
     try:
         df = load_showdown_pool(uploaded)
     except Exception as e:
@@ -391,100 +359,116 @@ def run_app():
     captain_names = sorted(df_cpt["Name"].unique().tolist())
 
     st.markdown("---")
-    st.subheader("Captain Exposures & Build Config")
+    st.subheader("Captain Exposures (raw weights, NOT normalized)")
 
-    # ---------------- CAPTAIN EXPOSURES ----------------
-    st.markdown("### Captain Exposures (will be normalized to 100%)")
-
+    # --------- CAPTAIN EXPOSURES (NO NORMALIZATION) ---------
     exposure_raw: Dict[str, float] = {}
     for cap in captain_names:
         key = f"exp_{cap}"
-        # Start everyone at equal-ish exposure by default
-        default_exp = round(100.0 / len(captain_names), 1) if captain_names else 0.0
         exposure_raw[cap] = st.slider(
-            f"{cap} Exposure (%)",
+            f"{cap} Exposure Weight",
             min_value=0.0,
             max_value=100.0,
-            value=default_exp,
+            value=0.0,  # default 0, user must set
             step=1.0,
             key=key,
         )
 
-    # Normalize exposures to sum to 1.0
-    exposure_raw_frac = {k: v / 100.0 for k, v in exposure_raw.items()}
-    exposure_norm = normalize_dict(exposure_raw_frac)
+    # We'll check "all zero" later, before building lineups.
 
-    # ---------------- CAPTAIN BUILD & RULES ----------------
-    st.markdown("### Build Weights & Rules Per Captain")
+    st.markdown("---")
+    st.subheader("Captain Build Weights & Rules")
 
-    # Build up CAPTAIN_CONFIG from UI
+    # --------- CAPTAIN CONFIG FROM UI ---------
     captain_config: Dict[str, Dict] = {}
 
     for cap in captain_names:
         with st.expander(f"Captain: {cap}", expanded=False):
-            st.markdown("**Build Weights** (per captain, normalized per captain)")
+            st.markdown("**Build Weights** (raw, NOT normalized; 0 disables that build for this captain)")
 
-            bw_raw: Dict[str, float] = {}
-            for build_type, _ in BUILD_TYPE_COUNTS.items():
-                default_pct = DEFAULT_BUILD_WEIGHTS.get(build_type, 0.0) * 100.0
-                bw_raw[build_type] = st.slider(
-                    f"{build_type} Weight (%) for {cap}",
-                    min_value=0.0,
-                    max_value=100.0,
-                    value=default_pct,
-                    step=1.0,
-                    key=f"bw_{cap}_{build_type}",
-                )
-
-            # Normalize build weights per captain
-            bw_frac = {k: v / 100.0 for k, v in bw_raw.items()}
-            bw_norm = normalize_dict(bw_frac)  # you asked: Yes, they should sum to 1
-
-            # Per-build rules: include, exclude, locks (one name per line)
+            tabs = st.tabs(list(BUILD_TYPE_COUNTS.keys()))
+            build_weights: Dict[str, float] = {}
             build_rules: Dict[str, Dict[str, List[str]]] = {}
-            for build_type in BUILD_TYPE_COUNTS.keys():
-                with st.expander(f"Rules for {cap} - {build_type}", expanded=False):
+
+            # One tab per build type
+            for tab, build_type in zip(tabs, BUILD_TYPE_COUNTS.keys()):
+                with tab:
+                    # Build weight input
+                    bw = st.number_input(
+                        f"{build_type} Weight for {cap}",
+                        min_value=0.0,
+                        max_value=1000.0,
+                        value=0.0,
+                        step=1.0,
+                        key=f"bw_{cap}_{build_type}",
+                    )
+                    build_weights[build_type] = bw
+
+                    st.markdown("**Include / Exclude / Locks**")
                     inc_txt = st.text_area(
-                        f"Include (one player name per line) - {cap} {build_type}",
+                        f"Include (one player name per line) - {build_type}",
                         key=f"inc_{cap}_{build_type}",
                         height=80,
                     )
                     exc_txt = st.text_area(
-                        f"Exclude (one player name per line) - {cap} {build_type}",
+                        f"Exclude (one player name per line) - {build_type}",
                         key=f"exc_{cap}_{build_type}",
                         height=80,
                     )
                     lock_txt = st.text_area(
-                        f"Locks (one player name per line) - {cap} {build_type}",
+                        f"Locks (one player name per line) - {build_type}",
                         key=f"lock_{cap}_{build_type}",
                         height=80,
                     )
 
-                build_rules[build_type] = {
-                    "include": parse_multiline_names(inc_txt),
-                    "exclude": parse_multiline_names(exc_txt),
-                    "locks": parse_multiline_names(lock_txt),
-                }
+                    build_rules[build_type] = {
+                        "include": parse_multiline_names(inc_txt),
+                        "exclude": parse_multiline_names(exc_txt),
+                        "locks": parse_multiline_names(lock_txt),
+                    }
 
             captain_config[cap] = {
-                "exposure": exposure_norm.get(cap, 0.0),
-                "build_weights": bw_norm,
+                "exposure": exposure_raw.get(cap, 0.0),
+                "build_weights": build_weights,
                 "build_rules": build_rules,
             }
 
-    # Update global CAPTAIN_CONFIG used by lineup logic
+    # Save globally for lineup logic
     CAPTAIN_CONFIG = captain_config
 
     st.markdown("---")
+
     if st.button("🚀 Build Lineups"):
+        # Random seed
         if random_seed >= 0:
             random.seed(int(random_seed))
+
+        # Validate exposures: at least one > 0
+        total_exposure_positive = sum(
+            1 for v in exposure_raw.values() if v > 0
+        )
+        if total_exposure_positive == 0:
+            st.error("All captain exposures are zero. Set at least one captain exposure above 0.")
+            return
+
+        # Validate build weights for each captain: at least one build type > 0
+        for cap, cfg in CAPTAIN_CONFIG.items():
+            bws = cfg["build_weights"]
+            if sum(1 for w in bws.values() if w > 0) == 0:
+                st.error(f"All build weights for captain **{cap}** are zero. Set at least one positive build weight.")
+                return
 
         if num_lineups <= 0:
             st.error("Number of lineups must be at least 1.")
             return
 
-        # Build captain plan from exposures
+        # Build captain plan from raw exposures
+        weights = {k: v["exposure"] for k, v in CAPTAIN_CONFIG.items()}
+        total_pos = sum(w for w in weights.values() if w > 0)
+        if total_pos <= 0:
+            st.error("All captain exposures are zero after weighting. Please set at least one positive exposure.")
+            return
+
         captain_plan = build_captain_plan(num_lineups, CAPTAIN_CONFIG)
 
         max_overall_attempts = num_lineups * 500
