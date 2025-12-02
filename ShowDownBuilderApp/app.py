@@ -250,13 +250,18 @@ def run_app():
 
     # ---------- GLOBAL PLAYER POOL FILTER ----------
     st.subheader("Global Player Pool Filter")
+
     all_names = sorted(df["Name"].unique().tolist())
 
     global_excluded = st.multiselect(
-        "Remove players from the global player pool (CPT + FLEX):",
+        "Remove players from the global player pool (optional):",
         options=all_names,
         default=[],
-        help="Players selected here will be completely removed from consideration as captains or FLEX."
+        help="Players selected here will be completely removed from consideration."
+    )
+    st.caption(
+        "Optional: Remove any players you do not want included in the slate. "
+        "Removed players will not appear as Captain, FLEX, or in any custom rules."
     )
 
     if global_excluded:
@@ -272,7 +277,6 @@ def run_app():
         st.error(str(e))
         return
 
-    # Basic info
     st.write(f"Detected teams: **{teams[0]}** vs **{teams[1]}**")
     st.write(f"CPT pool size: **{len(df_cpt)}**, FLEX pool size: **{len(df_flex)}**")
 
@@ -322,24 +326,37 @@ def run_app():
                     build_weights[build_type] = bw
 
                     include_sel = st.multiselect(
-                        f"Include - {build_type}",
+                        f"Include – {build_type} (optional)",
                         options=available_flex,
                         default=[],
                         key=f"inc_{cap}_{build_type}"
                     )
+                    st.caption(
+                        "Optional: If you select players here, the builder will restrict FLEX choices "
+                        "to ONLY these players for this Captain + Build Type. Leave empty to allow all eligible FLEX players."
+                    )
 
                     exclude_sel = st.multiselect(
-                        f"Exclude - {build_type}",
+                        f"Exclude – {build_type} (optional)",
                         options=available_flex,
                         default=[],
                         key=f"exc_{cap}_{build_type}"
                     )
+                    st.caption(
+                        "Optional: Selected players will NOT appear as FLEX for this Captain + Build Type. "
+                        "Leave empty if you do not wish to remove anyone."
+                    )
 
                     lock_sel = st.multiselect(
-                        f"Locks - {build_type}",
+                        f"Locks – {build_type} (optional)",
                         options=available_flex,
                         default=[],
                         key=f"lock_{cap}_{build_type}"
+                    )
+                    st.caption(
+                        "Optional: These players are GUARANTEED to be included in lineups for this "
+                        "Captain + Build Type, as long as salary and roster constraints allow. "
+                        "Leave empty for no forced players."
                     )
 
                     build_rules[build_type] = {
@@ -361,12 +378,10 @@ def run_app():
         if random_seed >= 0:
             random.seed(int(random_seed))
 
-        # Require at least one captain exposure > 0
         if all(v == 0 for v in exposure_raw.values()):
             st.error("All captain exposures are zero. Set at least one exposure > 0.")
             return
 
-        # Require build weights for captains with exposure > 0
         for cap, cfg in CAPTAIN_CONFIG.items():
             if cfg["exposure"] > 0:
                 if all(w == 0 for w in cfg["build_weights"].values()):
