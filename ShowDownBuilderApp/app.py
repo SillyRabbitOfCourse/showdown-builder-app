@@ -226,14 +226,34 @@ def lineups_to_df(lineups: List[Tuple[List[Dict], str]]) -> pd.DataFrame:
 
 
 # ================================================================
-#                         STREAMLIT UI
+#                STREAMLIT UI HELPERS (MODAL STATE)
 # ================================================================
 
-def parse_multiline_names(text: str) -> List[str]:
-    if not text:
-        return []
-    return [x.strip() for x in text.splitlines() if x.strip()]
+def get_state_list(kind: str, cap: str, build_type: str) -> List[str]:
+    key = f"{kind}_{cap}_{build_type}"
+    return st.session_state.get(key, [])
 
+
+def set_state_list(kind: str, cap: str, build_type: str, values: List[str]):
+    key = f"{kind}_{cap}_{build_type}"
+    st.session_state[key] = values
+
+
+def open_modal(kind: str, cap: str, build_type: str):
+    st.session_state["edit_mode"] = {
+        "kind": kind,
+        "cap": cap,
+        "build": build_type,
+    }
+
+
+def close_modal():
+    st.session_state["edit_mode"] = None
+
+
+# ================================================================
+#                         STREAMLIT APP
+# ================================================================
 
 def run_app():
     global CAPTAIN_CONFIG
@@ -260,13 +280,18 @@ def run_app():
         st.error(str(e))
         return
 
+    st.write(f"Detected teams: **{teams[0]}** vs **{teams[1]}**")
+    st.write(f"CPT pool size: **{len(df_cpt)}**, FLEX pool size: **{len(df_flex)}**")
+
     captain_names = sorted(df_cpt["Name"].unique().tolist())
+    flex_names = sorted(df_flex["Name"].unique().tolist())
 
     st.subheader("Captain Configurations")
 
     captain_config = {}
     exposure_raw = {}
 
+    # --------- MAIN CAPTAIN CONFIG UI ---------
     for cap in captain_names:
         with st.expander(f"Captain: {cap}", expanded=False):
 
@@ -296,14 +321,50 @@ def run_app():
                     )
                     build_weights[build_type] = bw
 
-                    inc_txt = st.text_area(f"Include - {build_type}", key=f"inc_{cap}_{build_type}")
-                    exc_txt = st.text_area(f"Exclude - {build_type}", key=f"exc_{cap}_{build_type}")
-                    lock_txt = st.text_area(f"Locks - {build_type}", key=f"lock_{cap}_{build_type}")
+                    # Retrieve current selections from session_state
+                    inc_list = get_state_list("include", cap, build_type)
+                    exc_list = get_state_list("exclude", cap, build_type)
+                    lock_list = get_state_list("locks", cap, build_type)
+
+                    st.markdown("**Included Players:**")
+                    if inc_list:
+                        st.write(", ".join(inc_list))
+                        for name in inc_list:
+                            st.write(f"• {name}")
+                    else:
+                        st.write("_None_")
+
+                    if st.button("Edit Include Players", key=f"btn_inc_{cap}_{build_type}"):
+                        open_modal("include", cap, build_type)
+
+                    st.markdown("---")
+                    st.markdown("**Excluded Players:**")
+                    if exc_list:
+                        st.write(", ".join(exc_list))
+                        for name in exc_list:
+                            st.write(f"• {name}")
+                    else:
+                        st.write("_None_")
+
+                    if st.button("Edit Exclude Players", key=f"btn_exc_{cap}_{build_type}"):
+                        open_modal("exclude", cap, build_type)
+
+                    st.markdown("---")
+                    st.markdown("**Locked Players:**")
+                    if lock_list:
+                        st.write(", ".join(lock_list))
+                        for name in lock_list:
+                            st.write(f"• {name}")
+                    else:
+                        st.write("_None_")
+
+                    if st.button("Edit Lock Players", key=f"btn_lock_{cap}_{build_type}"):
+                        open_modal("locks", cap, build_type)
 
                     build_rules[build_type] = {
-                        "include": parse_multiline_names(inc_txt),
-                        "exclude": parse_multiline_names(exc_txt),
-                        "locks": parse_multiline_names(lock_txt),
+                        "include": inc_list,
+                        "exclude": exc_list,
+                        "locks": lock_list,
                     }
 
             captain_config[cap] = {
@@ -314,19 +375,79 @@ def run_app():
 
     CAPTAIN_CONFIG = captain_config
 
-    if st.button("🚀 Build Lineups"):
+    # --------- MODAL UI FOR PLAYER SELECTION (C1-style) ---------
+    if "edit_mode" not in st.session_state:
+        st.session_state["edit_mode"] = None
 
-        # Seed
+    if st.session_state["edit_mode"] is not None:
+        em = st.session_state["edit_mode"]
+        kind = em["kind"]
+        cap = em["cap"]
+        build_type = em["build"]
+
+        st.markdown("---")
+        with st.container():
+            st.markdown(
+                f"""
+                <div style="
+                    position: fixed;
+                    top: 0; left: 0; width: 100%; height: 100%;
+                    background-color: rgba(0,0,0,0.5);
+                    z-index: 9999;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                ">
+                    <div style="
+                        background-color: white;
+                        padding: 20px;
+                        border-radius: 8px;
+                        width: 80%;
+                        max-width: 700px;
+                    ">
+                        <h3 style="margin-top: 0;">Edit {kind.title()} Players - {cap} ({build_type})</h3>
+                        <p>Use the selector below to choose players from the FLEX pool.</p>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        # Actual controls (not literally inside the overlay div, but functionally a modal)
+        st.markdown("### Player Selection")
+        current = get_state_list(kind, cap, build_type)
+        selected = st.multiselect(
+            "Select players",
+            options=flex_names,
+            default=current,
+            key="modal_multiselect",
+        )
+
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Save Selection", key="modal_save"):
+                set_state_list(kind, cap, build_type, selected)
+                close_modal()
+                st.experimental_rerun()
+
+        with col2:
+            if st.button("Cancel", key="modal_cancel"):
+                close_modal()
+                st.experimental_rerun()
+
+    # --------- BUILD LINEUPS BUTTON ---------
+    if st.button("🚀 Build Lineups"):
         if random_seed >= 0:
             random.seed(int(random_seed))
 
-        # ❗ FIX: Only require build weights if captain exposure > 0
+        # Check at least one captain exposure > 0
         if all(v == 0 for v in exposure_raw.values()):
             st.error("All captain exposures are zero. Set at least one exposure > 0.")
             return
 
+        # Only require build weights if captain exposure > 0
         for cap, cfg in CAPTAIN_CONFIG.items():
-            if cfg["exposure"] > 0:  # ✔ Only validate for active captains
+            if cfg["exposure"] > 0:
                 if all(w == 0 for w in cfg["build_weights"].values()):
                     st.error(f"Captain {cap} has exposure > 0 but all build weights are 0.")
                     return
