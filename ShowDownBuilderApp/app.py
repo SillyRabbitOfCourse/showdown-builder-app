@@ -238,33 +238,57 @@ def run_app():
         st.info("Please upload a `DKSalaries.csv` file.")
         return
 
+    # ---------- SIDEBAR GLOBAL SETTINGS ----------
     st.sidebar.header("Global Settings")
     num_lineups = st.sidebar.number_input("Number of Lineups", 1, 150, DEFAULT_NUM_LINEUPS)
     salary_cap = st.sidebar.number_input("Salary Cap", 0, 50000, DEFAULT_SALARY_CAP, 500)
     min_salary = st.sidebar.number_input("Minimum Salary", 0, salary_cap, DEFAULT_MIN_SALARY, 500)
     random_seed = st.sidebar.number_input("Random Seed (-1 for None)", value=DEFAULT_RANDOM_SEED)
 
+    # ---------- LOAD DF ----------
     df = load_showdown_pool(uploaded)
+
+    # ---------- GLOBAL PLAYER POOL FILTER ----------
+    st.subheader("Global Player Pool Filter")
+    all_names = sorted(df["Name"].unique().tolist())
+
+    global_excluded = st.multiselect(
+        "Remove players from the global player pool (CPT + FLEX):",
+        options=all_names,
+        default=[],
+        help="Players selected here will be completely removed from consideration as captains or FLEX."
+    )
+
+    if global_excluded:
+        df = df[~df["Name"].isin(global_excluded)].reset_index(drop=True)
+
+    # After global filtering, split CPT/FLEX
     df_cpt, df_flex = split_cpt_flex(df)
 
+    # Detect teams after filtering
     try:
         teams = determine_teams(df)
     except Exception as e:
         st.error(str(e))
         return
 
+    # Basic info
     st.write(f"Detected teams: **{teams[0]}** vs **{teams[1]}**")
     st.write(f"CPT pool size: **{len(df_cpt)}**, FLEX pool size: **{len(df_flex)}**")
+
+    if df_cpt.empty:
+        st.error("No captain-eligible players remain after global filtering. Remove fewer players.")
+        return
 
     captain_names = sorted(df_cpt["Name"].unique().tolist())
     flex_names_all = sorted(df_flex["Name"].unique().tolist())
 
+    # ---------- CAPTAIN CONFIG ----------
     st.subheader("Captain Configurations")
 
     captain_config = {}
     exposure_raw = {}
 
-    # --------- MAIN CAPTAIN CONFIG UI ---------
     for cap in captain_names:
         with st.expander(f"Captain: {cap}", expanded=False):
 
@@ -332,16 +356,17 @@ def run_app():
 
     CAPTAIN_CONFIG = captain_config
 
-    # --------- BUILD LINEUPS BUTTON ---------
+    # ---------- BUILD LINEUPS ----------
     if st.button("🚀 Build Lineups"):
         if random_seed >= 0:
             random.seed(int(random_seed))
 
+        # Require at least one captain exposure > 0
         if all(v == 0 for v in exposure_raw.values()):
             st.error("All captain exposures are zero. Set at least one exposure > 0.")
             return
 
-        # Only require build weights for captains with exposure > 0
+        # Require build weights for captains with exposure > 0
         for cap, cfg in CAPTAIN_CONFIG.items():
             if cfg["exposure"] > 0:
                 if all(w == 0 for w in cfg["build_weights"].values()):
@@ -375,7 +400,7 @@ def run_app():
                 built = True
 
         if not lineups:
-            st.error("No valid lineups could be built. Loosen constraints.")
+            st.error("No valid lineups could be built. Loosen constraints or remove fewer players.")
             return
 
         st.success(f"Built {len(lineups)} lineups!")
