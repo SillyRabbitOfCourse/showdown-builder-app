@@ -310,7 +310,7 @@ def run_app():
         step=1,
     )
 
-    # Salary cap: fixed range 0–50k, default 50k
+    # Salary cap: adjustable 0–50k, default 50k
     salary_cap = st.sidebar.number_input(
         "Salary Cap",
         min_value=0,
@@ -359,32 +359,26 @@ def run_app():
     captain_names = sorted(df_cpt["Name"].unique().tolist())
 
     st.markdown("---")
-    st.subheader("Captain Exposures (raw weights, NOT normalized)")
+    st.subheader("Captain Configuration (Exposure + Build Rules)")
 
-    # --------- CAPTAIN EXPOSURES (NO NORMALIZATION) ---------
-    exposure_raw: Dict[str, float] = {}
-    for cap in captain_names:
-        key = f"exp_{cap}"
-        exposure_raw[cap] = st.slider(
-            f"{cap} Exposure Weight",
-            min_value=0.0,
-            max_value=100.0,
-            value=0.0,  # default 0, user must set
-            step=1.0,
-            key=key,
-        )
-
-    # We'll check "all zero" later, before building lineups.
-
-    st.markdown("---")
-    st.subheader("Captain Build Weights & Rules")
-
-    # --------- CAPTAIN CONFIG FROM UI ---------
+    # --------- CAPTAIN CONFIG FROM UI (EXPOSURE + BUILDS TOGETHER) ---------
     captain_config: Dict[str, Dict] = {}
+    exposure_raw: Dict[str, float] = {}
 
     for cap in captain_names:
         with st.expander(f"Captain: {cap}", expanded=False):
-            st.markdown("**Build Weights** (raw, NOT normalized; 0 disables that build for this captain)")
+            # Captain exposure as percent slider, default 0, raw (no normalization)
+            exp_val = st.slider(
+                f"{cap} Captain Exposure (%)",
+                min_value=0.0,
+                max_value=100.0,
+                value=0.0,
+                step=1.0,
+                key=f"exp_{cap}",
+            )
+            exposure_raw[cap] = exp_val
+
+            st.markdown("**Build Weights & Rules** (percent sliders, NOT normalized)")
 
             tabs = st.tabs(list(BUILD_TYPE_COUNTS.keys()))
             build_weights: Dict[str, float] = {}
@@ -393,11 +387,10 @@ def run_app():
             # One tab per build type
             for tab, build_type in zip(tabs, BUILD_TYPE_COUNTS.keys()):
                 with tab:
-                    # Build weight input
-                    bw = st.number_input(
-                        f"{build_type} Weight for {cap}",
+                    bw = st.slider(
+                        f"{build_type} Weight (%) for {cap}",
                         min_value=0.0,
-                        max_value=1000.0,
+                        max_value=100.0,
                         value=0.0,
                         step=1.0,
                         key=f"bw_{cap}_{build_type}",
@@ -428,8 +421,8 @@ def run_app():
                     }
 
             captain_config[cap] = {
-                "exposure": exposure_raw.get(cap, 0.0),
-                "build_weights": build_weights,
+                "exposure": exp_val,        # raw percent used as weight
+                "build_weights": build_weights,  # raw percents used as weights
                 "build_rules": build_rules,
             }
 
@@ -462,7 +455,7 @@ def run_app():
             st.error("Number of lineups must be at least 1.")
             return
 
-        # Build captain plan from raw exposures
+        # Build captain plan from raw exposure percents
         weights = {k: v["exposure"] for k, v in CAPTAIN_CONFIG.items()}
         total_pos = sum(w for w in weights.values() if w > 0)
         if total_pos <= 0:
